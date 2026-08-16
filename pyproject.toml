@@ -7,4 +7,5 @@ requires-python = ">=3.13"
 dependencies = [
     "huggingface-hub[hf-transfer]>=1.27.0",
     "numpy>=2.5.2",
+    "scipy>=1.18.0",
 ]
