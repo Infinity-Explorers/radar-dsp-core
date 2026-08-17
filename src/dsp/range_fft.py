@@ -1,7 +1,7 @@
 import numpy as np
 from windowing import apply_window
 
-def process_range_fft(raw_cube,TC=1e-4, B=150e6, window_type='hann'):
+def process_range_fft(raw_cube,TC=60e-6, B=0.67e9, window_type='hann'):
     window_cube = apply_window(raw_cube, window_type=window_type, axis=2)
     fft_out = np.fft.fft(window_cube, axis=2)
     c=3e8
