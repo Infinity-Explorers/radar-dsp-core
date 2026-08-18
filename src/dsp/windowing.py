@@ -1,6 +1,6 @@
 import numpy as np
 
-def apply_window(data, window_type='hann', axis=-1):
+def apply_window(data, window_type='hann', axis=0):
     N = data.shape[axis]
     if window_type.lower() == 'hann':
         win = np.hanning(N)
