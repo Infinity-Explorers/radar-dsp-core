@@ -5,7 +5,7 @@ from src.configs import startFreqConst_GHz, c
 C = c
 CARRIER_FREQUENCY = startFreqConst_GHz * 1e9
 
-def angle_fft(doppler_spectrum, num_angle_bins=64):
+def angle_fft(doppler_spectrum, num_angle_bins=64, carrier_frequency=CARRIER_FREQUENCY):
     """
     Perform spatial FFT across the receiver antennas.
 
@@ -30,13 +30,6 @@ def angle_fft(doppler_spectrum, num_angle_bins=64):
         axes=2
     )
 
-    return angle_spectrum
-
-
-def calculate_azimuth_axis(
-    num_angle_bins=64,
-    carrier_frequency=CARRIER_FREQUENCY
-):
     """
     Calculate azimuth angles.
 
@@ -71,4 +64,4 @@ def calculate_azimuth_axis(
         np.arcsin(sin_theta[valid])
     )
 
-    return azimuth
+    return angle_spectrum , azimuth
