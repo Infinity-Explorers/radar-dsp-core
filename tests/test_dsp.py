@@ -27,6 +27,14 @@ Design notes
   the layout the code actually relies on, and this docstring flags the
   discrepancy explicitly rather than silently testing something the
   pipeline doesn't use.
+
+* Real-data integration test: a `.bin` sample frame was requested, but this
+  project has no `.bin` data path anywhere. Its only real-data source is a
+  Hugging Face Hub dataset of MATLAB `.mat` files, accessed via
+  `src.data_access.hf_client.get_frame()`. `TestRealDataIntegration` (at the
+  bottom of this file) exercises that actual real-data path end-to-end and
+  skips -- explicitly, with a reason -- if the dataset can't be reached in
+  the current environment, instead of fabricating a fake `.bin` file.
 """
 
 import numpy as np
@@ -263,3 +271,125 @@ class TestWindowing:
 
         far_bin = (int(peak_unwindowed) + 6) % N
         assert windowed_power[far_bin] < unwindowed_power[far_bin]
+
+
+# ==========================================================================
+# 5. Angle FFT -- Virtual Antenna Array Phase Synthesis & Peak Localization
+# ==========================================================================
+class TestAngleFFTPeakLocalization:
+    """Dedicated unit test for src.dsp.angle.angle_fft.
+
+    angle_fft's real signature is:
+        angle_fft(doppler_spectrum, num_angle_bins=64, carrier_frequency=...)
+    with doppler_spectrum shape (range_bins, chirps, receivers, transmitters).
+    Internally it reshapes the last two axes into 8 virtual antenna channels
+    (n_rx * n_tx, row-major: virtual index v = rx * n_tx + tx), applies a
+    Hann window across that virtual-antenna axis, then FFTs across it
+    (axis=2) and fftshifts. There is no `axis=` argument to pass -- the
+    spatial axis is fixed internally by the function, so this test drives
+    the function through its actual, real parameters only.
+    """
+
+    NUM_ANGLE_BINS = 64
+    ANGLE_BIN = 20  # arbitrary target bin in [0, NUM_ANGLE_BINS - 1]
+
+    def _make_synthetic_virtual_array(self):
+        """Simulate a single far-field target arriving with a linear phase
+        progression across the NUM_RX x NUM_TX = 8 virtual antenna channels:
+        element v's phase = 2*pi * ANGLE_BIN * v / NUM_ANGLE_BINS. This is
+        the discrete analogue of a planar wavefront hitting the array at the
+        angle that maps exactly to bin ANGLE_BIN."""
+        doppler_spectrum = np.zeros((1, 1, NUM_RX, NUM_TX), dtype=complex)
+        for rx in range(NUM_RX):
+            for tx in range(NUM_TX):
+                v = rx * NUM_TX + tx  # matches angle_fft's row-major reshape
+                doppler_spectrum[0, 0, rx, tx] = np.exp(
+                    1j * 2 * np.pi * self.ANGLE_BIN * v / self.NUM_ANGLE_BINS
+                )
+        return doppler_spectrum
+
+    def test_angle_fft_output_shape(self):
+        doppler_spectrum = self._make_synthetic_virtual_array()
+        angle_spectrum, azimuth_axis = angle_fft(
+            doppler_spectrum, num_angle_bins=self.NUM_ANGLE_BINS
+        )
+        assert angle_spectrum.shape == (1, 1, self.NUM_ANGLE_BINS)
+        assert azimuth_axis.shape == (self.NUM_ANGLE_BINS,)
+
+    def test_angle_fft_peak_lands_on_expected_angle_bin(self):
+        """For a virtual-array phase progression that exactly matches one of
+        the num_angle_bins DFT frequencies, the windowed spatial FFT is
+        mathematically guaranteed to peak at that exact bin: the aligned bin
+        maximizes |sum_v w[v] * exp(-j*theta*v)| by the triangle inequality,
+        for any nonnegative real window w[v]. So this also confirms the Hann
+        window applied inside angle_fft does not shift the angle peak."""
+        doppler_spectrum = self._make_synthetic_virtual_array()
+        angle_spectrum, azimuth_axis = angle_fft(
+            doppler_spectrum, num_angle_bins=self.NUM_ANGLE_BINS
+        )
+
+        power = np.abs(angle_spectrum[0, 0, :]) ** 2
+        peak_bin = int(np.argmax(power))
+
+        # angle_fft fftshifts the spatial FFT axis; derive the expected
+        # post-shift bin the same way the function does, rather than
+        # re-deriving the shift formula by hand.
+        expected_bin = int(
+            np.where(np.fft.fftshift(np.arange(self.NUM_ANGLE_BINS)) == self.ANGLE_BIN)[0][0]
+        )
+        assert peak_bin == expected_bin
+
+        # The peak should clearly dominate an unrelated, distant bin.
+        far_bin = (peak_bin + self.NUM_ANGLE_BINS // 2) % self.NUM_ANGLE_BINS
+        assert power[peak_bin] > power[far_bin]
+
+        # The azimuth angle reported at the peak must be a real, finite
+        # value within [-90, 90] degrees (azimuth is NaN only for spatial
+        # frequencies outside the visible |sin(theta)| <= 1 range).
+        assert np.isfinite(azimuth_axis[peak_bin])
+        assert -90.0 <= azimuth_axis[peak_bin] <= 90.0
+
+
+# ==========================================================================
+# 6. Real-Data Integration Test
+# ==========================================================================
+# This project has no ".bin" frames anywhere. Its only real-data path is
+# src.data_access.hf_client.get_frame(), which downloads a MATLAB ".mat"
+# file (key "adcData") from the Hugging Face Hub dataset
+# "hany34/raw-adc-data-77ghz-mmwave-radar-automotive-object-detection" and
+# returns an array shaped (samples, chirps, receivers, transmitters). No
+# sample frame of any kind is checked into this repository. Rather than
+# fabricate a fake ".bin" file and call that "real data", this test drives
+# the project's actual real-data entry point end-to-end
+# (get_frame -> run_dsp_pipeline) and skips -- explicitly, with a reason --
+# if the dataset can't be reached in this environment (huggingface_hub not
+# installed, no network access, dataset unavailable/gated, etc.), rather
+# than silently substituting synthetic data for it.
+class TestRealDataIntegration:
+    def test_end_to_end_pipeline_on_real_dataset_frame(self):
+        try:
+            from src.data_access.hf_client import get_frame
+        except ImportError as exc:
+            pytest.skip(f"huggingface_hub not installed; cannot reach real dataset: {exc}")
+
+        try:
+            raw_frame = get_frame(0)
+        except Exception as exc:  # network / auth / dataset-availability errors
+            pytest.skip(f"Real dataset unavailable in this environment: {exc}")
+
+        from src.dsp.pipeline import run_dsp_pipeline
+
+        assert raw_frame.ndim == 4
+        assert raw_frame.shape[0] == numAdcSamples
+        assert raw_frame.shape[1] == numLoops
+
+        range_axis, velocity_axis, rd_angle_cube, azimuth_axis = run_dsp_pipeline(raw_frame)
+
+        assert rd_angle_cube.shape == EXPECTED_CUBE_SHAPE
+        assert not np.any(np.isnan(rd_angle_cube))
+        assert not np.any(np.isinf(rd_angle_cube))
+        assert np.any(np.abs(rd_angle_cube) > 0)  # valid, non-trivial spectral data
+
+        assert range_axis.shape == (EXPECTED_RANGE_BINS,)
+        assert velocity_axis.shape == (EXPECTED_CHIRPS,)
+        assert azimuth_axis.shape == (NUM_ANGLE_BINS,)
