@@ -97,11 +97,11 @@ if __name__ == "__main__":
             'num_guard_d': 2,
             'num_train_a': 2,
             'num_guard_a': 1,
-            'pfa': 1e-4
+            'pfa': 1e-4,
+            'k_rank':0.75
         }
 
     # 2. Generate Dummy 3D Radar Cube Tensor of Shape (64, 255, 64)
-
     np.random.seed(42)  # For reproducible results
     noise_real = np.random.normal(0, 1, size=(64, 255, 64))
     noise_imag = np.random.normal(0, 1, size=(64, 255, 64))
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     print("Executing Stage 1 CFAR Pipeline on Dummy 3D Radar Cube...")
     detected_targets = detect_3d_peaks(dummy_cube, res_params, cfar_params, algorithm='CA')
 
-    # 4. Display Extracted Candidates
+    # 4. Display Extracted Candidates 
 
     print(f"\n[+] Total Candidate Targets Extracted: {len(detected_targets)}")
     for idx, target in enumerate(detected_targets, start=1):
@@ -124,4 +124,3 @@ if __name__ == "__main__":
         print(f"  Velocity (m/s)       : {target['velocity_m_s']:.3f} m/s")
         print(f"  Azimuth (deg)        : {target['azimuth_deg']:.3f}°")
         print(f"  Power / Noise Floor  : {target['power']:.2f} / {target['noise_floor']:.2f}")
-    
