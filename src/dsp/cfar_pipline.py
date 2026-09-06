@@ -14,6 +14,7 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
     Returns:
         - candidate_peaks: List of dictionaries containing candidate detection attributes
     """
+    candidate_peaks = []
     if np.iscomplexobj(cube):
         power_cube = np.abs(cube) ** 2
     else:
@@ -56,20 +57,14 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
     ra_r_indices, ra_az_indices = np.where(mask_ra)
 
     for r_rd, d_idx in zip(rd_r_indices, rd_d_indices):
-     
-     # Match RD and RA detections with range gate tolerance <= 1
-     matching_mask = np.abs(ra_r_indices - r_rd) <= 1
-     matched_az_indices = ra_az_indices[matching_mask]
+        matching_mask = np.abs(ra_r_indices - r_rd) <= 1
+        matched_az_indices = ra_az_indices[matching_mask]
 
-    for az_idx in matched_az_indices:
-        candidate_peaks = []
-        candidate_power = power_cube[r_rd, d_idx, az_idx]
-        local_noise_floor = noise_rd[r_rd, d_idx]
-        if candidate_power > local_noise_floor:
+        for az_idx in matched_az_indices:
+            candidate_power = power_cube[r_rd, d_idx, az_idx]
+            local_noise_floor = noise_rd[r_rd, d_idx]
+
             if candidate_power > local_noise_floor:
-                # -------------------------------------------------------------
-                # 5. Coordinate Transformation to Physical Units
-                # -------------------------------------------------------------
                 range_m = r_rd * res_params['range_res']
                 velocity_m_s = (d_idx - Nd // 2) * res_params['vel_res']
                 azimuth_deg = (az_idx - Na // 2) * res_params['az_res']
@@ -84,7 +79,6 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
                     "power": float(candidate_power),
                     "noise_floor": float(local_noise_floor)
                 })
-
     return candidate_peaks
 if __name__ == "__main__":
 
@@ -112,10 +106,11 @@ if __name__ == "__main__":
     noise_real = np.random.normal(0, 1, size=(64, 255, 64))
     noise_imag = np.random.normal(0, 1, size=(64, 255, 64))
     dummy_cube = noise_real + 1j * noise_imag
+    
+    # 3. Sanity check: Inject dummy target at bin (20, 100, 30)
+    dummy_cube[20, 100, 30] += 50.0
 
-
-    # 3. Run Pipeline Execution
-
+    # 4. Run Pipeline Execution
     print("Executing Stage 1 CFAR Pipeline on Dummy 3D Radar Cube...")
     detected_targets = detect_3d_peaks(dummy_cube, res_params, cfar_params, algorithm='CA')
 
