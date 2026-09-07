@@ -24,6 +24,9 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
     power_rd = np.max(power_cube, axis=2)  # Max over azimuth dimension
     power_ra = np.max(power_cube, axis=1)  # Max over Doppler dimension
 
+    pfa = cfar_params.get('pfa', 1e-4)
+    k_rank = cfar_params.get('k_rank', 0.75)
+    
     if algorithm.upper() == 'CA':
         mask_rd, noise_rd = ca_cfar_2d(
             power_rd,
@@ -52,19 +55,32 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
         )
     else:
         raise ValueError(f"Unknown algorithm '{algorithm}'. Supported options: 'CA', 'OS'.")
-
+    n_train_rd = (2 * (cfar_params['num_train_r'] + cfar_params['num_guard_r']) + 1) * \
+                 (2 * (cfar_params['num_train_d'] + cfar_params['num_guard_d']) + 1) - \
+                 (2 * cfar_params['num_guard_r'] + 1) * (2 * cfar_params['num_guard_d'] + 1)
+    alpha_rd = n_train_rd * (pfa ** (-1.0 / n_train_rd) - 1.0)
+    thresh_rd = noise_rd * alpha_rd
     rd_r_indices, rd_d_indices = np.where(mask_rd)
     ra_r_indices, ra_az_indices = np.where(mask_ra)
 
     for r_rd, d_idx in zip(rd_r_indices, rd_d_indices):
         matching_mask = np.abs(ra_r_indices - r_rd) <= 1
         matched_az_indices = ra_az_indices[matching_mask]
-
+        #========
         for az_idx in matched_az_indices:
             candidate_power = power_cube[r_rd, d_idx, az_idx]
-            local_noise_floor = noise_rd[r_rd, d_idx]
+            threshold_cutoff = thresh_rd[r_rd, d_idx]
 
-            if candidate_power > local_noise_floor:
+            if candidate_power > threshold_cutoff:
+                # Condition 2: 3D Local Peak Verification (Suppresses Ghost Targets)
+                r_slice = slice(max(0, r_rd - 1), min(Nr, r_rd + 2))
+                d_slice = slice(max(0, d_idx - 1), min(Nd, d_idx + 2))
+                a_slice = slice(max(0, az_idx - 1), min(Na, az_idx + 2))
+                local_3d_max = np.max(power_cube[r_slice, d_slice, a_slice])
+
+                # Reject ghosts: Candidate must be the dominant local peak in 3D
+                if candidate_power < local_3d_max:
+                    continue
                 range_m = r_rd * res_params['range_res']
                 velocity_m_s = (d_idx - Nd // 2) * res_params['vel_res']
                 azimuth_deg = (az_idx - Na // 2) * res_params['az_res']
@@ -77,7 +93,7 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
                     "velocity_m_s": float(velocity_m_s),
                     "azimuth_deg": float(azimuth_deg),
                     "power": float(candidate_power),
-                    "noise_floor": float(local_noise_floor)
+                    "noise_floor": float(threshold_cutoff)
                 })
     return candidate_peaks
 if __name__ == "__main__":
