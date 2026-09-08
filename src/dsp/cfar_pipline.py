@@ -45,13 +45,15 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
             power_rd,
             cfar_params['num_train_r'], cfar_params['num_train_d'],
             cfar_params['num_guard_r'], cfar_params['num_guard_d'],
-            pfa=cfar_params.get('pfa', 1e-4)
+            pfa=cfar_params.get('pfa', 1e-4),
+            k_rank= k_rank
         )
         mask_ra, noise_ra = os_cfar_2d(
             power_ra,
             cfar_params['num_train_r'], cfar_params['num_train_a'],
             cfar_params['num_guard_r'], cfar_params['num_guard_a'],
-            pfa=cfar_params.get('pfa', 1e-4)
+            pfa=cfar_params.get('pfa', 1e-4), 
+            k_rank= k_rank
         )
     else:
         raise ValueError(f"Unknown algorithm '{algorithm}'. Supported options: 'CA', 'OS'.")
