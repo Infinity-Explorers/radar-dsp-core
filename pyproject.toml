@@ -1,0 +1,20 @@
+[project]
+name = "radar-dsp-core"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "huggingface-hub[hf-transfer]>=1.27.0",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pyarrow>=25.0.1",
+    "pytest>=9.1.1",
+    "scipy>=1.18.0",
+    "pytest>=9.1.1"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
