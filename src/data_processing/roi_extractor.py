@@ -15,6 +15,10 @@ EPSILON = 1e-6
 
 CLASS_MAP = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
 
+# Name of the column in metadata.parquet that holds the ground-truth class.
+# Adjust this if the actual parquet schema uses a different column name.
+GT_CLASS_COLUMN = "class_id"
+
 
 def validate_radar_cube(radar_cube):
     radar_cube = np.asarray(radar_cube)
@@ -27,6 +31,9 @@ def validate_radar_cube(radar_cube):
 
 
 def extract_patch(radar_cube, peak):
+    """Extract a 9x9x9 sub-volume centered on `peak`, with symmetric
+    zero-padding applied whenever the window would exceed the cube
+    boundaries."""
     radar_cube = validate_radar_cube(radar_cube)
     r_bin, v_bin, az_bin = peak
 
@@ -51,16 +58,44 @@ def extract_patch(radar_cube, peak):
 
 
 def log_power_scaling(patch):
+    """log10(|patch|^2 + eps) normalization."""
     power = np.abs(patch) ** 2
     log_power = np.log10(power + EPSILON)
     return log_power
 
 
+def polar_to_cartesian(range_val, azimuth_deg):
+    """Convert (range, azimuth) polar coordinates to Cartesian (x, y)
+    so distances are computed in a single, consistent unit (meters)."""
+    azimuth_rad = np.radians(azimuth_deg)
+    x = range_val * np.sin(azimuth_rad)
+    y = range_val * np.cos(azimuth_rad)
+    return x, y
+
+
 def calculate_distance(candidate_range, candidate_azimuth, gt_range, gt_azimuth):
-    distance = np.sqrt(
-        (candidate_range - gt_range) ** 2 +
-        (candidate_azimuth - gt_azimuth) ** 2
-    )
+    """Euclidean distance in meters between a candidate and a ground-truth
+    center, after converting both from (range, azimuth) polar coordinates
+    to Cartesian (x, y). Mixing range (meters) and azimuth (degrees)
+    directly in a single Euclidean formula is physically meaningless,
+    so both points are projected into the same Cartesian plane first.
+
+    `gt_range` / `gt_azimuth` are typically pandas Series pulled from a
+    filtered DataFrame, so their index may be non-contiguous or
+    duplicated. To keep this a purely positional, vectorized computation
+    (and avoid pandas trying to align on that index, which can silently
+    introduce NaNs or mismatches), we strip both inputs down to raw
+    NumPy arrays with `.to_numpy()` / `np.asarray()` before computing.
+    The caller is responsible for mapping the resulting positional
+    argmin back to the original DataFrame index.
+    """
+    gt_range = gt_range.to_numpy() if hasattr(gt_range, "to_numpy") else np.asarray(gt_range)
+    gt_azimuth = gt_azimuth.to_numpy() if hasattr(gt_azimuth, "to_numpy") else np.asarray(gt_azimuth)
+
+    cand_x, cand_y = polar_to_cartesian(candidate_range, candidate_azimuth)
+    gt_x, gt_y = polar_to_cartesian(gt_range, gt_azimuth)
+
+    distance = np.sqrt((cand_x - gt_x) ** 2 + (cand_y - gt_y) ** 2)
     return distance
 
 
@@ -71,6 +106,9 @@ def match_ground_truth(
     frame_id=None,
     sequence=None
 ):
+    """Match a CFAR candidate to the nearest ground-truth object.
+    Returns class_id (1..6) if a match is found within
+    MATCH_DISTANCE_THRESHOLD, otherwise returns 0 (Clutter/False Alarm)."""
     gt = metadata.copy()
 
     if sequence is not None and "sequence" in gt.columns:
@@ -89,13 +127,20 @@ def match_ground_truth(
         gt["azimuth_deg"]
     )
 
-    nearest_index = distances.idxmin()
-    nearest_distance = distances.loc[nearest_index]
+    # distances is now a plain NumPy array (positional, 0-based), so we
+    # find the nearest match positionally with argmin, then translate
+    # that position back to the original (possibly non-contiguous)
+    # DataFrame index via gt.index. This avoids relying on pandas index
+    # alignment, which could otherwise produce NaNs or mismatches after
+    # upstream filtering.
+    nearest_pos = np.argmin(distances)
+    nearest_distance = distances[nearest_pos]
+    nearest_index = gt.index[nearest_pos]
 
     if nearest_distance < MATCH_DISTANCE_THRESHOLD:
-        original_class = int(gt.loc[nearest_index, "class"])
+        original_class = int(gt.loc[nearest_index, GT_CLASS_COLUMN])
         return CLASS_MAP.get(original_class, 0)
-    
+
     return 0
 
 
@@ -105,6 +150,7 @@ def subsample_clutter(
     max_background_ratio=MAX_BACKGROUND_RATIO,
     random_seed=42
 ):
+    """Cap the background(clutter):foreground ratio at max_background_ratio:1."""
     rng = np.random.default_rng(random_seed)
     patches = np.asarray(patches)
     labels = np.asarray(labels)
@@ -115,7 +161,6 @@ def subsample_clutter(
     foreground_indices = np.where(labels != 0)[0]
     background_indices = np.where(labels == 0)[0]
 
-    # If testing with dummy data where no foreground targets match
     if len(foreground_indices) == 0:
         selected_indices = background_indices
     else:
@@ -135,14 +180,6 @@ def subsample_clutter(
     return patches[selected_indices], labels[selected_indices]
 
 
-def generate_dummy_peaks(num_peaks=20, seed=42):
-    rng = np.random.default_rng(seed)
-    r_bins = rng.integers(0, CUBE_SHAPE[0], size=num_peaks)
-    v_bins = rng.integers(0, CUBE_SHAPE[1], size=num_peaks)
-    az_bins = rng.integers(0, CUBE_SHAPE[2], size=num_peaks)
-    return list(zip(r_bins, v_bins, az_bins))
-
-
 def build_roi_dataset(
     radar_cube,
     peaks,
@@ -152,14 +189,20 @@ def build_roi_dataset(
     frame_id=None,
     sequence=None
 ):
+    """Build (patches, labels) arrays for a single frame."""
     patches = []
     labels = []
 
-    for peak in peaks:
-        r_bin, v_bin, az_bin = peak
+    for peak_info in peaks:
+        if isinstance(peak_info, dict):
+            peak = (peak_info["r_bin"], peak_info["v_bin"], peak_info["az_bin"])
+        else:
+            peak = peak_info
 
         patch = extract_patch(radar_cube, peak)
         patch = log_power_scaling(patch)
+
+        r_bin, _, az_bin = peak
         candidate_range = range_axis[r_bin]
         candidate_azimuth = azimuth_axis[az_bin]
 
@@ -174,8 +217,14 @@ def build_roi_dataset(
         patches.append(patch)
         labels.append(label)
 
-    patches = np.asarray(patches)
-    labels = np.asarray(labels, dtype=np.int64)
+    if len(patches) == 0:
+        # Preserve a well-defined shape even when a frame has no peaks,
+        # so downstream concatenation / consumers never see shape (0,).
+        patches = np.empty((0, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
+        labels = np.empty((0,), dtype=np.int64)
+    else:
+        patches = np.asarray(patches)
+        labels = np.asarray(labels, dtype=np.int64)
 
     return patches, labels
 
@@ -189,11 +238,13 @@ def process_sequence(
     sequence_name,
     output_dir="data/roi_patches"
 ):
+    """Process a single sequence: extract patches/labels for every frame,
+    subsample clutter, and export to data/roi_patches/<sequence_name>.npz."""
     all_patches = []
     all_labels = []
 
     for frame_id, radar_cube in enumerate(sequence_cubes):
-        peaks = sequence_peaks.get(frame_id, generate_dummy_peaks(num_peaks=20))
+        peaks = sequence_peaks.get(frame_id, [])
 
         patches, labels = build_roi_dataset(
             radar_cube=radar_cube,
@@ -212,8 +263,12 @@ def process_sequence(
     if len(all_patches) > 0:
         all_patches = np.concatenate(all_patches, axis=0)
         all_labels = np.concatenate(all_labels, axis=0)
+    else:
+        # No peaks in the whole sequence: keep a well-defined empty shape
+        # instead of collapsing to shape (0,).
+        all_patches = np.empty((0, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
+        all_labels = np.empty((0,), dtype=np.int64)
 
-    # Subsample clutter once across the full sequence
     all_patches, all_labels = subsample_clutter(all_patches, all_labels)
 
     out_dir = Path(output_dir)
@@ -227,27 +282,40 @@ def process_sequence(
     )
     print(f"Saved: {export_path} (Patches: {all_patches.shape}, Labels: {all_labels.shape})")
 
+    return export_path
 
-if __name__ == "__main__":
-    range_axis = np.linspace(0, 100, CUBE_SHAPE[0])
-    azimuth_axis = np.linspace(-60, 60, CUBE_SHAPE[2])
-    
-    dummy_cube = np.random.randn(*CUBE_SHAPE) + 1j * np.random.randn(*CUBE_SHAPE)
-    dummy_metadata = pd.DataFrame({
-        "sequence": ["seq_01"],
-        "frame_id": [0],
-        "range_m": [25.0],
-        "azimuth_deg": [10.0],
-        "class": [1]
-    })
 
-    dummy_peaks_dict = {0: generate_dummy_peaks(num_peaks=20)}
+def process_all_sequences(
+    sequences,
+    metadata,
+    range_axis,
+    azimuth_axis,
+    output_dir="data/roi_patches"
+):
+    """Batch-export entry point: iterate over every sequence and export
+    each one to its own .npz file under `output_dir`.
 
-    process_sequence(
-        sequence_cubes=[dummy_cube],
-        sequence_peaks=dummy_peaks_dict,
-        metadata=dummy_metadata,
-        range_axis=range_axis,
-        azimuth_axis=azimuth_axis,
-        sequence_name="seq_01"
-    )   
+    `sequences` is expected to be a dict mapping:
+        sequence_name -> {
+            "cubes": list/array of radar cubes for that sequence,
+            "peaks": dict mapping frame_id -> list of peak (r_bin, v_bin, az_bin)
+        }
+    """
+    exported_paths = []
+
+    for sequence_name, sequence_data in sequences.items():
+        sequence_cubes = sequence_data["cubes"]
+        sequence_peaks = sequence_data["peaks"]
+
+        export_path = process_sequence(
+            sequence_cubes=sequence_cubes,
+            sequence_peaks=sequence_peaks,
+            metadata=metadata,
+            range_axis=range_axis,
+            azimuth_axis=azimuth_axis,
+            sequence_name=sequence_name,
+            output_dir=output_dir
+        )
+        exported_paths.append(export_path)
+
+    return exported_paths
