@@ -30,15 +30,9 @@ def ca_cfar_2d(power_map, num_train_r, num_train_c, num_guard_r, num_guard_c, pf
     n_guard = kernel_r_guard * kernel_c_guard
     n_train = n_full - n_guard
 
-    footprint = np.ones((kernel_r_full, kernel_c_full), dtype=bool)
-    r_start = num_train_r
-    r_end = r_start + kernel_r_guard
-    c_start = num_train_c
-    c_end = c_start + kernel_c_guard
-    footprint[r_start:r_end, c_start:c_end] = False
     # Compute total integrated power using uniform moving average filters
-    sum_full = uniform_filter(power_map, size=footprint, mode='nearest') * n_full
-    sum_guard = uniform_filter(power_map, size=footprint, mode='nearest') * n_guard
+    sum_full = uniform_filter(power_map, size=(kernel_r_full, kernel_c_full), mode='nearest') * n_full
+    sum_guard = uniform_filter(power_map, size=(kernel_r_full, kernel_c_full), mode='nearest') * n_guard
 
     noise_floor = (sum_full - sum_guard) / n_train
     noise_floor = np.maximum(noise_floor, 1e-9)
@@ -57,6 +51,9 @@ def os_cfar_2d(power_map, num_train_r, num_train_c, num_guard_r, num_guard_c, k_
     kernel_r_full = 2 * (num_train_r + num_guard_r) + 1
     kernel_c_full = 2 * (num_train_c + num_guard_c) + 1
 
+    kernel_r_guard = 2 * num_guard_r + 1
+    kernel_c_guard = 2 * num_guard_c + 1
+
     n_full = kernel_r_full * kernel_c_full
     n_guard = (2 * num_guard_r + 1) * (2 * num_guard_c + 1)
     n_train = n_full - n_guard
@@ -71,8 +68,15 @@ def os_cfar_2d(power_map, num_train_r, num_train_c, num_guard_r, num_guard_c, k_
     # ضمان إن الـ rank جوه حدود الـ training cells
     k_rank_idx = max(0, min(k_rank_idx, n_train - 1))
 
+    footprint = np.ones((kernel_r_full, kernel_c_full), dtype=bool)
+    r_start = num_train_r
+    r_end = r_start + kernel_r_guard
+    c_start = num_train_c
+    c_end = c_start + kernel_c_guard
+    footprint[r_start:r_end, c_start:c_end] = False
+
     # Estimate noise floor using k-th ordered statistic
-    noise_floor = rank_filter(power_map, rank=k_rank_idx, size=(kernel_r_full, kernel_c_full), mode='nearest')
+    noise_floor = rank_filter(power_map, rank=k_rank_idx, footprint=footprint, mode='nearest')
     noise_floor = np.maximum(noise_floor, 1e-9)
     
     alpha = get_os_alpha(pfa, n_train, k_rank_idx)
