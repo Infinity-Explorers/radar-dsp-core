@@ -69,6 +69,7 @@ def ca_cfar_2d(
         * n_guard
     )
 
+
     noise_floor = (sum_full - sum_guard) / n_train
     noise_floor = np.maximum(noise_floor, 1e-9)
 
@@ -121,7 +122,7 @@ def os_cfar_2d(
         k_rank_idx = int(k_rank)
 
     k_rank_idx = max(0, min(k_rank_idx, n_train - 1))
-
+    
     # Build hollow window footprint
     footprint = np.ones((kernel_r_full, kernel_c_full), dtype=bool)
     r_start = num_train_r
@@ -133,6 +134,7 @@ def os_cfar_2d(
     noise_floor = rank_filter(
         power_map, rank=k_rank_idx, footprint=footprint, mode="nearest"
     )
+
     noise_floor = np.maximum(noise_floor, 1e-9)
 
     # Pass 1-based order k to root-finder

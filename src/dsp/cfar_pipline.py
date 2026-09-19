@@ -52,12 +52,14 @@ def detect_3d_peaks(
             cfar_params["num_train_r"], cfar_params["num_train_d"],
             cfar_params["num_guard_r"], cfar_params["num_guard_d"],
             k_rank=k_rank, pfa=pfa
+
         )
         mask_ra, _, _ = os_cfar_2d(
             power_ra,
             cfar_params["num_train_r"], cfar_params["num_train_a"],
             cfar_params["num_guard_r"], cfar_params["num_guard_a"],
             k_rank=k_rank, pfa=pfa
+
         )
     else:
         raise ValueError(f"Unsupported algorithm '{algorithm}'. Choose 'CA' or 'OS'.")
