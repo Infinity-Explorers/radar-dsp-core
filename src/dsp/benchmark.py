@@ -17,16 +17,24 @@ import numpy as np
 from src.data_access.hf_client import frame_stream
 from src.dsp.pipeline import run_dsp_pipeline  
 from src.dsp.cfar_pipline import detect_3d_peaks
-def extract_gt_targets(frame):
+import pandas as pd
+df_gt = pd.read_parquet(
+    "hf://datasets/hany34/raw-adc-data-77ghz-mmwave-radar-automotive-object-detection/metadata.parquet"
+)
+unique_frames = df_gt['frame_id'].unique()
+def get_gt_for_frame(frame_idx, df_meatadata:pd.DataFrame) -> list[dict]:
+    if frame_idx >= len(unique_frames):
+        return []
+    target_frame_id = unique_frames[frame_idx]
+    frame_data = df_meatadata[df_meatadata['frame_id'] == target_frame_id]
     gt_targets = []
-    if isinstance(frame, dict):
-        labels = frame.get('text_labels', [])
-        for obj in labels:
-            x = obj['x']
-            y = obj['y']
-            r_gt = np.sqrt(x**2 + y**2)
-            az_gt = np.degrees(np.arctan2(x, y)) 
-            gt_targets.append({'range': r_gt, 'azimuth': az_gt})
+    for _, row in frame_data.iterrows():
+        gt_targets.append({
+            'range': row['range_m'],
+            'azimuth': row['azimuth_deg'],
+            'class': row['class_name']
+
+        })
     return gt_targets
 def evaluate_detections(detected_peaks, gt_targets, range_tolerance=1.0, azimuth_tolerance=5.0):
     if not gt_targets:
@@ -34,8 +42,10 @@ def evaluate_detections(detected_peaks, gt_targets, range_tolerance=1.0, azimuth
     matched_gt = 0
     for gt in gt_targets:
         for det in detected_peaks:
-            r_diff = abs(det['range'] - gt['range'])
-            az_diff = abs(det['azimuth'] - gt['azimuth'])
+            det_range = det.get('range_m', det.get('range', 0.0))
+            det_azimuth = det.get('azimuth_deg', det.get('azimuth', 0.0))
+            r_diff = abs(det_range - gt['range'])
+            az_diff = abs(det_azimuth - gt['azimuth'])
             if r_diff <= range_tolerance and az_diff <= azimuth_tolerance:
                 matched_gt += 1
                 break
@@ -45,7 +55,7 @@ if __name__ == "__main__":
     cached_frames = []
     for i, frame in enumerate(frame_stream(realtime=False)):
         cached_frames.append(frame)
-        if i >= 100:  # Cache only the first 5 frames for benchmarking
+        if i >= 100:  
             break
     base_cfar_params = getattr(configs, 'cfar_params', {
         'num_train_r': 4,'num_guard_r': 2,
@@ -62,7 +72,7 @@ if __name__ == "__main__":
         total_recall = 0.0
         total_latency_ms = 0.0
         total_proposals = 0
-        for frame in cached_frames:
+        for frame_idx, frame in enumerate(cached_frames):
             raw_adc_data = frame['radar_raw_frame'] if isinstance(frame, dict) else frame
             range_axis, velocity_axis, rd_angle_cube, azimuth_axis = run_dsp_pipeline(raw_adc_data)
             res_params = {
@@ -74,7 +84,7 @@ if __name__ == "__main__":
             detected_peaks = detect_3d_peaks(rd_angle_cube, res_params, cfar_params, algorithm=cfar_params['algorithm'])
             t1 = time.perf_counter()
             total_latency_ms += (t1 - t0) * 1000.0
-            gt_targets = extract_gt_targets(frame)
+            gt_targets = get_gt_for_frame(frame_idx, df_gt)
             recall = evaluate_detections(detected_peaks, gt_targets)
             total_recall += recall
             total_proposals += len(detected_peaks)
