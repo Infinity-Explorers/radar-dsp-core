@@ -27,39 +27,47 @@ def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
     pfa = cfar_params.get('pfa', 1e-4)
     k_rank = cfar_params.get('k_rank', 0.75)
     
-    if algorithm.upper() == 'CA':
-        mask_rd, noise_rd = ca_cfar_2d(
+    if algorithm.upper() == "CA":
+        mask_rd, noise_rd, thresh_rd = ca_cfar_2d(
             power_rd,
-            cfar_params['num_train_r'], cfar_params['num_train_d'],
-            cfar_params['num_guard_r'], cfar_params['num_guard_d'],
-            pfa=cfar_params.get('pfa', 1e-4)
+            cfar_params["num_train_r"],
+            cfar_params["num_train_d"],
+            cfar_params["num_guard_r"],
+            cfar_params["num_guard_d"],
+            pfa=pfa,
         )
-        mask_ra, noise_ra = ca_cfar_2d(
+        mask_ra, noise_ra, thresh_ra = ca_cfar_2d(
             power_ra,
-            cfar_params['num_train_r'], cfar_params['num_train_a'],
-            cfar_params['num_guard_r'], cfar_params['num_guard_a'],
-            pfa=cfar_params.get('pfa', 1e-4)
+            cfar_params["num_train_r"],
+            cfar_params["num_train_a"],
+            cfar_params["num_guard_r"],
+            cfar_params["num_guard_a"],
+            pfa=pfa,
         )
-    elif algorithm.upper() == 'OS':
-        mask_rd, noise_rd = os_cfar_2d(
+    elif algorithm.upper() == "OS":
+        mask_rd, noise_rd, thresh_rd = os_cfar_2d(
             power_rd,
-            cfar_params['num_train_r'], cfar_params['num_train_d'],
-            cfar_params['num_guard_r'], cfar_params['num_guard_d'],
-            pfa=cfar_params.get('pfa', 1e-4)
+            cfar_params["num_train_r"],
+            cfar_params["num_train_d"],
+            cfar_params["num_guard_r"],
+            cfar_params["num_guard_d"],
+            k_rank=k_rank,
+            pfa=pfa,
         )
-        mask_ra, noise_ra = os_cfar_2d(
+        mask_ra, noise_ra, thresh_ra = os_cfar_2d(
             power_ra,
-            cfar_params['num_train_r'], cfar_params['num_train_a'],
-            cfar_params['num_guard_r'], cfar_params['num_guard_a'],
-            pfa=cfar_params.get('pfa', 1e-4)
+            cfar_params["num_train_r"],
+            cfar_params["num_train_a"],
+            cfar_params["num_guard_r"],
+            cfar_params["num_guard_a"],
+            k_rank=k_rank,
+            pfa=pfa,
         )
     else:
-        raise ValueError(f"Unknown algorithm '{algorithm}'. Supported options: 'CA', 'OS'.")
-    n_train_rd = (2 * (cfar_params['num_train_r'] + cfar_params['num_guard_r']) + 1) * \
-                 (2 * (cfar_params['num_train_d'] + cfar_params['num_guard_d']) + 1) - \
-                 (2 * cfar_params['num_guard_r'] + 1) * (2 * cfar_params['num_guard_d'] + 1)
-    alpha_rd = n_train_rd * (pfa ** (-1.0 / n_train_rd) - 1.0)
-    thresh_rd = noise_rd * alpha_rd
+        raise ValueError(
+            f"Unknown algorithm '{algorithm}'. Supported options: 'CA', 'OS'."
+        )
+
     rd_r_indices, rd_d_indices = np.where(mask_rd)
     ra_r_indices, ra_az_indices = np.where(mask_ra)
 
