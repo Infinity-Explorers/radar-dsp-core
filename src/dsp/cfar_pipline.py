@@ -1,150 +1,126 @@
+"""
+Core 3D CFAR detection pipeline and peak extraction engine.
+Handles dual-plane projections (RD, RA), 2D thresholding, range-gate association,
+and 3D ghost target suppression.
+"""
+
+from typing import Any, Dict, List
 import numpy as np
 from cfar_detectors import ca_cfar_2d, os_cfar_2d
 
-def detect_3d_peaks(cube, res_params, cfar_params, algorithm='CA'):
+
+def detect_3d_peaks(
+    cube: np.ndarray,
+    res_params: Dict[str, Any],
+    cfar_params: Dict[str, Any],
+    algorithm: str = "CA"
+) -> List[Dict[str, Any]]:
     """
-    Stage 1 Deliverable: Core CFAR Algorithms & Peak Extraction Engine
-    
-    Inputs:
-        - cube: 3D complex radar cube tensor of shape (64, 255, 64)
-        - res_params: dict containing 'range_res', 'vel_res', 'az_res'
-        - cfar_params: dict containing training/guard window bounds and pfa
-        - algorithm: 'CA' for Cell-Averaging or 'OS' for Ordered-Statistic
-        
-    Returns:
-        - candidate_peaks: List of dictionaries containing candidate detection attributes
+    Executes Stage 1 peak detection across dual projections and extracts physical coordinates.
     """
-    candidate_peaks = []
     if np.iscomplexobj(cube):
         power_cube = np.abs(cube) ** 2
     else:
         power_cube = cube
 
-    Nr, Nd, Na = power_cube.shape
-    power_rd = np.max(power_cube, axis=2)  # Max over azimuth dimension
-    power_ra = np.max(power_cube, axis=1)  # Max over Doppler dimension
+    nr, nd, na = power_cube.shape
 
-    pfa = cfar_params.get('pfa', 1e-4)
-    k_rank = cfar_params.get('k_rank', 0.75)
-    
-    if algorithm.upper() == "CA":
-        mask_rd, noise_rd, thresh_rd = ca_cfar_2d(
+    # Dual-plane max-power projections
+    power_rd = np.max(power_cube, axis=2)  # Range-Doppler: (Nr, Nd)
+    power_ra = np.max(power_cube, axis=1)  # Range-Azimuth: (Nr, Na)
+
+    pfa = cfar_params.get("pfa", 1e-4)
+    k_rank = cfar_params.get("k_rank", 0.75)
+    algo = algorithm.upper()
+
+    if algo == "CA":
+        mask_rd, _, thresh_rd = ca_cfar_2d(
             power_rd,
-            cfar_params["num_train_r"],
-            cfar_params["num_train_d"],
-            cfar_params["num_guard_r"],
-            cfar_params["num_guard_d"],
-            pfa=pfa,
+            cfar_params["num_train_r"], cfar_params["num_train_d"],
+            cfar_params["num_guard_r"], cfar_params["num_guard_d"],
+            pfa=pfa
         )
-        mask_ra, noise_ra, thresh_ra = ca_cfar_2d(
+        mask_ra, _, _ = ca_cfar_2d(
             power_ra,
-            cfar_params["num_train_r"],
-            cfar_params["num_train_a"],
-            cfar_params["num_guard_r"],
-            cfar_params["num_guard_a"],
-            pfa=pfa,
+            cfar_params["num_train_r"], cfar_params["num_train_a"],
+            cfar_params["num_guard_r"], cfar_params["num_guard_a"],
+            pfa=pfa
         )
-    elif algorithm.upper() == "OS":
-        mask_rd, noise_rd, thresh_rd = os_cfar_2d(
+    elif algo == "OS":
+        mask_rd, _, thresh_rd = os_cfar_2d(
             power_rd,
-            cfar_params["num_train_r"],
-            cfar_params["num_train_d"],
-            cfar_params["num_guard_r"],
-            cfar_params["num_guard_d"],
-            k_rank=k_rank,
-            pfa=pfa,
+            cfar_params["num_train_r"], cfar_params["num_train_d"],
+            cfar_params["num_guard_r"], cfar_params["num_guard_d"],
+            k_rank=k_rank, pfa=pfa
         )
-        mask_ra, noise_ra, thresh_ra = os_cfar_2d(
+        mask_ra, _, _ = os_cfar_2d(
             power_ra,
-            cfar_params["num_train_r"],
-            cfar_params["num_train_a"],
-            cfar_params["num_guard_r"],
-            cfar_params["num_guard_a"],
-            k_rank=k_rank,
-            pfa=pfa,
+            cfar_params["num_train_r"], cfar_params["num_train_a"],
+            cfar_params["num_guard_r"], cfar_params["num_guard_a"],
+            k_rank=k_rank, pfa=pfa
         )
     else:
-        raise ValueError(
-            f"Unknown algorithm '{algorithm}'. Supported options: 'CA', 'OS'."
-        )
+        raise ValueError(f"Unsupported algorithm '{algorithm}'. Choose 'CA' or 'OS'.")
 
+    # Range-gate association
     rd_r_indices, rd_d_indices = np.where(mask_rd)
     ra_r_indices, ra_az_indices = np.where(mask_ra)
 
+    azimuth_axis = res_params.get("azimuth_axis", None)
+    range_axis = res_params.get("range_axis", None)
+    range_res = res_params.get("range_res", 0.2238)
+    vel_res = res_params["vel_res"]
+    az_res = res_params.get("az_res", 1.2)
+
+    candidate_peaks = []
+    visited_bins = set()
+
     for r_rd, d_idx in zip(rd_r_indices, rd_d_indices):
-        matching_mask = np.abs(ra_r_indices - r_rd) <= 1
-        matched_az_indices = ra_az_indices[matching_mask]
-        #========
+        matched_az_indices = ra_az_indices[np.abs(ra_r_indices - r_rd) <= 1]
+
         for az_idx in matched_az_indices:
+            bin_tuple = (int(r_rd), int(d_idx), int(az_idx))
+            if bin_tuple in visited_bins:
+                continue
+
             candidate_power = power_cube[r_rd, d_idx, az_idx]
             threshold_cutoff = thresh_rd[r_rd, d_idx]
 
-            if candidate_power > threshold_cutoff:
-                # Condition 2: 3D Local Peak Verification (Suppresses Ghost Targets)
-                r_slice = slice(max(0, r_rd - 1), min(Nr, r_rd + 2))
-                d_slice = slice(max(0, d_idx - 1), min(Nd, d_idx + 2))
-                a_slice = slice(max(0, az_idx - 1), min(Na, az_idx + 2))
-                local_3d_max = np.max(power_cube[r_slice, d_slice, a_slice])
+            if candidate_power <= threshold_cutoff:
+                continue
 
-                # Reject ghosts: Candidate must be the dominant local peak in 3D
-                if candidate_power < local_3d_max:
-                    continue
-                range_m = r_rd * res_params['range_res']
-                velocity_m_s = (d_idx - Nd // 2) * res_params['vel_res']
-                azimuth_deg = (az_idx - Na // 2) * res_params['az_res']
+            # 3D local maximum filter for ghost/sidelobe rejection
+            r_slice = slice(max(0, r_rd - 1), min(nr, r_rd + 2))
+            d_slice = slice(max(0, d_idx - 1), min(nd, d_idx + 2))
+            a_slice = slice(max(0, az_idx - 1), min(na, az_idx + 2))
+            
+            if candidate_power < np.max(power_cube[r_slice, d_slice, a_slice]):
+                continue
 
-                candidate_peaks.append({
-                    "r_bin": int(r_rd),
-                    "v_bin": int(d_idx),
-                    "az_bin": int(az_idx),
-                    "range_m": float(range_m),
-                    "velocity_m_s": float(velocity_m_s),
-                    "azimuth_deg": float(azimuth_deg),
-                    "power": float(candidate_power),
-                    "noise_floor": float(threshold_cutoff)
-                })
+            visited_bins.add(bin_tuple)
+
+            # Physical coordinates
+            if range_axis is not None:
+                range_m = float(range_axis[r_rd])
+            else:
+                range_m = float(r_rd * range_res)
+
+            velocity_m_s = float((d_idx - nd // 2) * vel_res)
+            
+            if azimuth_axis is not None:
+                azimuth_deg = float(azimuth_axis[az_idx])
+            else:
+                azimuth_deg = float((az_idx - na // 2) * az_res)
+
+            candidate_peaks.append({
+                "r_bin": int(r_rd),
+                "v_bin": int(d_idx),
+                "az_bin": int(az_idx),
+                "range_m": range_m,
+                "velocity_m_s": velocity_m_s,
+                "azimuth_deg": azimuth_deg,
+                "power": float(candidate_power),
+                "noise_floor": float(threshold_cutoff)
+            })
+
     return candidate_peaks
-if __name__ == "__main__":
-
-    # 1. Setup Resolution and CFAR Parameters
-
-    res_params = {
-            'range_res': 0.2238,   # Range resolution in meters
-            'vel_res': 0.15,       # Velocity resolution in m/s
-            'az_res': 1.2          # Azimuth resolution in degrees
-        }
-    
-    cfar_params = {
-            'num_train_r': 4,
-            'num_guard_r': 2,
-            'num_train_d': 4,
-            'num_guard_d': 2,
-            'num_train_a': 2,
-            'num_guard_a': 1,
-            'pfa': 1e-4,
-            'k_rank':0.75
-        }
-
-    # 2. Generate Dummy 3D Radar Cube Tensor of Shape (64, 255, 64)
-    np.random.seed(42)  # For reproducible results
-    noise_real = np.random.normal(0, 1, size=(64, 255, 64))
-    noise_imag = np.random.normal(0, 1, size=(64, 255, 64))
-    dummy_cube = noise_real + 1j * noise_imag
-    
-    # 3. Sanity check: Inject dummy target at bin (20, 100, 30)
-    dummy_cube[20, 100, 30] += 50.0
-
-    # 4. Run Pipeline Execution
-    print("Executing Stage 1 CFAR Pipeline on Dummy 3D Radar Cube...")
-    detected_targets = detect_3d_peaks(dummy_cube, res_params, cfar_params, algorithm='CA')
-
-    # 4. Display Extracted Candidates 
-
-    print(f"\n[+] Total Candidate Targets Extracted: {len(detected_targets)}")
-    for idx, target in enumerate(detected_targets, start=1):
-        print(f"\nTarget {idx}:")
-        print(f"  Bins (r, v, az)      : ({target['r_bin']}, {target['v_bin']}, {target['az_bin']})")
-        print(f"  Range (m)            : {target['range_m']:.3f} m")
-        print(f"  Velocity (m/s)       : {target['velocity_m_s']:.3f} m/s")
-        print(f"  Azimuth (deg)        : {target['azimuth_deg']:.3f}°")
-        print(f"  Power / Noise Floor  : {target['power']:.2f} / {target['noise_floor']:.2f}")
