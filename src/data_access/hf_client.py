@@ -4,6 +4,7 @@ from huggingface_hub import list_repo_files, hf_hub_download
 from scipy.io import loadmat
 import numpy as np
 import time
+from pathlib import Path
 
 REPO_ID = "hany34/raw-adc-data-77ghz-mmwave-radar-automotive-object-detection"
 REPO_TYPE = "dataset"
@@ -22,14 +23,24 @@ def num_frames() -> int:
     return len(_load_frame_index())
 
 # extracting a single frame as an array of shape (samples, chirps, receivers, transmitters)
-def get_frame(index: int) -> np.ndarray:
+def get_frame(index: int):
     paths = _load_frame_index()
-    local_path = hf_hub_download(repo_id=REPO_ID, filename=paths[index], repo_type=REPO_TYPE)
+    filepath = paths[index]
+    local_path = hf_hub_download(
+        repo_id=REPO_ID, filename=filepath, repo_type=REPO_TYPE
+    )
     mat = loadmat(local_path)
-    key = "adcData"
-    if key not in mat:
-        raise KeyError(f"Expected key '{key}' not found in {paths[index]}. Found: {list(mat.keys())}")
-    return mat[key]
+
+    p = Path(filepath)
+    # Extract frame_id and sequence from the file path
+    frame_id = p.stem.replace("radar_raw_frame_", "")  # e.g., '0000000003'
+    sequence = p.parent.parent.name  # e.g., '2019_04_09_bms1000'
+
+    return {
+        "radar_raw_frame": mat["adcData"],
+        "frame_id": frame_id,
+        "sequence": sequence,
+    }
 
 FRAME_PERIOD_S = 33.33333 / 1000  # from dataset config: framePeriodicity_msec, 30 fps
 def frame_stream(realtime: bool = False, frame_period_s: float = FRAME_PERIOD_S):

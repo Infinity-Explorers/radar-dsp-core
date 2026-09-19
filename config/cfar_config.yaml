@@ -1,0 +1,10 @@
+cfar_params:
+  algorithm: CA
+  k_rank: 0.75
+  num_guard_a: 1
+  num_guard_d: 2
+  num_guard_r: 2
+  num_train_a: 2
+  num_train_d: 4
+  num_train_r: 4
+  pfa: 0.005
