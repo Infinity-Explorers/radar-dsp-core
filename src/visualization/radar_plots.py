@@ -32,32 +32,30 @@ CLASS_ID_TO_NAME = {
 # ============================================================
 
 def magnitude_to_db(data):
-    """Convert magnitude to decibels: 20*log10(|data| + eps)."""
-    return 20 * np.log10(np.abs(data) + 1e-12)
+    """Convert power to decibels: 10*log10(power + eps)."""
+    return 10 * np.log10(np.abs(data) + 1e-12)
 
 
 def create_range_doppler_map(radar_cube):
     """
-    Average the azimuth dimension and create a Range-Doppler matrix.
+    Max-power projection across the azimuth dimension to create a
+    Range-Doppler matrix (consistent with Member 1's CFAR pipeline).
 
     Input shape:  (range_bins, doppler_bins, azimuth_bins) -> (64, 255, 64)
     Output shape: (range_bins, doppler_bins)
     """
-    magnitude = np.abs(radar_cube)
-    rdm = np.mean(magnitude, axis=2)
-    return rdm
+    return np.max(np.abs(radar_cube) ** 2, axis=2)
 
 
 def create_range_azimuth_map(radar_cube):
     """
-    Average the Doppler dimension and create a Range-Azimuth (BEV) matrix.
+    Max-power projection across the Doppler dimension to create a
+    Range-Azimuth (BEV) matrix (consistent with Member 1's CFAR pipeline).
 
     Input shape:  (range_bins, doppler_bins, azimuth_bins) -> (64, 255, 64)
     Output shape: (range_bins, azimuth_bins)
     """
-    magnitude = np.abs(radar_cube)
-    ra_map = np.mean(magnitude, axis=1)
-    return ra_map
+    return np.max(np.abs(radar_cube) ** 2, axis=1)
 
 
 # ============================================================
@@ -184,8 +182,11 @@ def plot_bev_detections(radar_cube, peaks, azimuth_deg, range_axis, gt_metadata=
     ra_map = create_range_azimuth_map(radar_cube)
     ra_db = magnitude_to_db(ra_map)
 
+    # ra_db has shape (range, azimuth); imshow maps rows -> Y axis and
+    # cols -> X axis, so transpose to align azimuth with the horizontal
+    # extent and range with the vertical extent.
     im = ax.imshow(
-        ra_db,
+        ra_db.T,
         aspect="auto",
         origin="lower",
         extent=[azimuth_deg[0], azimuth_deg[-1], range_axis[0], range_axis[-1]],
@@ -251,8 +252,11 @@ def plot_inference_overlay(radar_cube, predictions, azimuth_deg, range_axis, ax=
     ra_map = create_range_azimuth_map(radar_cube)
     ra_db = magnitude_to_db(ra_map)
 
+    # ra_db has shape (range, azimuth); imshow maps rows -> Y axis and
+    # cols -> X axis, so transpose to align azimuth with the horizontal
+    # extent and range with the vertical extent.
     im = ax.imshow(
-        ra_db,
+        ra_db.T,
         aspect="auto",
         origin="lower",
         extent=[azimuth_deg[0], azimuth_deg[-1], range_axis[0], range_axis[-1]],
