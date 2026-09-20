@@ -201,10 +201,19 @@ def build_roi_dataset(
 
         patch = extract_patch(radar_cube, peak)
         patch = log_power_scaling(patch)
+        patch = patch[np.newaxis, ...]  # Add channel dim -> shape becomes (1, 9, 9, 9)
 
         r_bin, _, az_bin = peak
-        candidate_range = range_axis[r_bin]
-        candidate_azimuth = azimuth_axis[az_bin]
+
+        # Prefer Member 1's precomputed physical coordinates when available,
+        # to avoid sign/offset mismatches with the ground-truth metadata.
+        # Fall back to axis lookups only if peak_info doesn't carry them.
+        if isinstance(peak_info, dict):
+            candidate_range = peak_info.get("range_m", range_axis[r_bin])
+            candidate_azimuth = peak_info.get("azimuth_deg", azimuth_axis[az_bin])
+        else:
+            candidate_range = range_axis[r_bin]
+            candidate_azimuth = azimuth_axis[az_bin]
 
         label = match_ground_truth(
             candidate_range,
@@ -220,7 +229,7 @@ def build_roi_dataset(
     if len(patches) == 0:
         # Preserve a well-defined shape even when a frame has no peaks,
         # so downstream concatenation / consumers never see shape (0,).
-        patches = np.empty((0, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
+        patches = np.empty((0, 1, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
         labels = np.empty((0,), dtype=np.int64)
     else:
         patches = np.asarray(patches)
@@ -266,7 +275,7 @@ def process_sequence(
     else:
         # No peaks in the whole sequence: keep a well-defined empty shape
         # instead of collapsing to shape (0,).
-        all_patches = np.empty((0, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
+        all_patches = np.empty((0, 1, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
         all_labels = np.empty((0,), dtype=np.int64)
 
     all_patches, all_labels = subsample_clutter(all_patches, all_labels)
