@@ -13,12 +13,13 @@ MATCH_DISTANCE_THRESHOLD = 1.5
 MAX_BACKGROUND_RATIO = 3
 EPSILON = 1e-6
 
-CLASS_MAP = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
-
-# Name of the column in metadata.parquet that holds the ground-truth class.
-# Adjust this if the actual parquet schema uses a different column name.
-GT_CLASS_COLUMN = "class_id"
-
+CLASS_MAP = {
+    "background": 0,
+    "pedestrian": 1,
+    "cyclist": 2,
+    "car": 3,
+    "truck": 4,
+}
 
 def validate_radar_cube(radar_cube):
     radar_cube = np.asarray(radar_cube)
@@ -115,7 +116,8 @@ def match_ground_truth(
         gt = gt[gt["sequence"] == sequence]
 
     if frame_id is not None and "frame_id" in gt.columns:
-        gt = gt[gt["frame_id"].astype(str) == str(frame_id)]
+        fid_str = str(frame_id).zfill(10)
+        gt = gt[gt["frame_id"].astype(str) == fid_str]
 
     if len(gt) == 0:
         return 0
@@ -138,8 +140,8 @@ def match_ground_truth(
     nearest_index = gt.index[nearest_pos]
 
     if nearest_distance < MATCH_DISTANCE_THRESHOLD:
-        original_class = int(gt.loc[nearest_index, GT_CLASS_COLUMN])
-        return CLASS_MAP.get(original_class, 0)
+        class_str = str(gt.loc[nearest_index, "class_name"]).lower().strip()
+        return CLASS_MAP.get(class_str, 0)
 
     return 0
 
@@ -209,11 +211,11 @@ def build_roi_dataset(
         # to avoid sign/offset mismatches with the ground-truth metadata.
         # Fall back to axis lookups only if peak_info doesn't carry them.
         if isinstance(peak_info, dict):
-            candidate_range = peak_info.get("range_m", range_axis[r_bin])
-            candidate_azimuth = peak_info.get("azimuth_deg", azimuth_axis[az_bin])
+            candidate_range = float(peak_info.get("range_m", range_axis[r_bin]))
+            candidate_azimuth = float(peak_info.get("azimuth_deg", azimuth_axis[az_bin]))
         else:
-            candidate_range = range_axis[r_bin]
-            candidate_azimuth = azimuth_axis[az_bin]
+            candidate_range = float(range_axis[r_bin])
+            candidate_azimuth = float(azimuth_axis[az_bin])
 
         label = match_ground_truth(
             candidate_range,
@@ -227,12 +229,12 @@ def build_roi_dataset(
         labels.append(label)
 
     if len(patches) == 0:
-        # Preserve a well-defined shape even when a frame has no peaks,
-        # so downstream concatenation / consumers never see shape (0,).
-        patches = np.empty((0, 1, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE))
-        labels = np.empty((0,), dtype=np.int64)
+        patches = np.empty(
+            (0, 1, PATCH_SIZE, PATCH_SIZE, PATCH_SIZE), dtype=np.float32
+        )
+        labels = np.empty((0,), dtype=np.int64) 
     else:
-        patches = np.asarray(patches)
+        patches = np.asarray(patches, dtype=np.float32)
         labels = np.asarray(labels, dtype=np.int64)
 
     return patches, labels
