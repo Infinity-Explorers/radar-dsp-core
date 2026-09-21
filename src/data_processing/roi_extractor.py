@@ -15,10 +15,13 @@ EPSILON = 1e-6
 
 CLASS_MAP = {
     "background": 0,
-    "pedestrian": 1,
+    "person": 1,
+    "pedestrian": 1,  # Alias to ensure backwards compatibility
     "cyclist": 2,
     "car": 3,
-    "truck": 4,
+    "motorbike": 4,
+    "bus": 5,
+    "truck": 6,
 }
 
 def validate_radar_cube(radar_cube):
